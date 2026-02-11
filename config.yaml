@@ -1,0 +1,48 @@
+# Stock Collector Configuration
+
+# Data collection settings
+collection:
+  # Default start date for backfill (earliest available data)
+  default_start_date: "2006-01-01"
+  # Batch size: number of symbols to process per batch
+  batch_size: 30
+  # Delay between API requests (seconds) to avoid rate limiting
+  request_delay: 1.5
+  # Maximum retries for failed requests
+  max_retries: 5
+  # Retry delay (seconds)
+  retry_delay: 15
+  # Extra delay when rate limited (seconds)
+  rate_limit_delay: 60
+
+# Market indices to track
+indices:
+  - VNINDEX
+  - HNX-INDEX
+  - UPCOM-INDEX
+
+# Scheduler settings
+scheduler:
+  # Daily price collection: run at 18:00 (after market close at 15:00)
+  daily_price_cron:
+    hour: 18
+    minute: 0
+  # Daily index collection: run at 18:15
+  daily_index_cron:
+    hour: 18
+    minute: 15
+  # Weekly financial statements: run every Saturday at 08:00
+  weekly_financial_cron:
+    day_of_week: "sat"
+    hour: 8
+    minute: 0
+  # Daily listing update: run at 17:30
+  daily_listing_cron:
+    hour: 17
+    minute: 30
+
+# Logging
+logging:
+  level: INFO
+  format: "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+  file: "logs/stock_collector.log"
