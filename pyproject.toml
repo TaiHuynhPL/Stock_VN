@@ -18,6 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pandas>=2.0",
     "rich>=13.0",
+    "pytz>=2024.1",
 ]
 
 [project.scripts]

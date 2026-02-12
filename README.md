@@ -44,13 +44,13 @@ stock-collector init-db
 
 ```bash
 # Thu thập tất cả (listing + price + index + financial)
-stock-collector backfill --start 2020-01-01
+stock-collector backfill --start 2005-01-01
 
 # Chỉ thu thập giá cho một số mã cụ thể
-stock-collector backfill --symbols VNM,FPT,VIC --start 2023-01-01
+stock-collector backfill --symbols VNM,FPT,VIC --start 2005-01-01
 
 # Chỉ thu thập chỉ số thị trường
-stock-collector backfill --type index --start 2020-01-01
+stock-collector backfill --type index --start 2005-01-01
 ```
 
 ### Collect Daily — Thu thập dữ liệu mới nhất
