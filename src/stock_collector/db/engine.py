@@ -18,8 +18,21 @@ _SessionLocal = None
 def init_engine(config: AppConfig):
     """Initialize the SQLAlchemy engine and session factory."""
     global _engine, _SessionLocal
+    import socket
+    
+    # Resolve hostname to IPv4 to avoid IPv6 issues in Docker/GitHub Actions
+    db_host = config.db.host
+    try:
+        db_host = socket.gethostbyname(config.db.host)
+        logger.info(f"Resolved database host {config.db.host} to {db_host}")
+    except Exception as e:
+        logger.warning(f"Failed to resolve database host {config.db.host}: {e}")
+
+    # Reconstruct the URL with the resolved IP
+    db_url = config.db.url.replace(config.db.host, db_host)
+
     _engine = create_engine(
-        config.db.url,
+        db_url,
         pool_size=5,
         max_overflow=10,
         pool_pre_ping=True,
