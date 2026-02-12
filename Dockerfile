@@ -26,11 +26,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-# Disable IPv6 to avoid connection issues
-RUN echo "net.ipv6.conf.all.disable_ipv6=1" >> /etc/sysctl.conf && \
-    echo "net.ipv6.conf.default.disable_ipv6=1" >> /etc/sysctl.conf && \
-    echo "net.ipv6.conf.lo.disable_ipv6=1" >> /etc/sysctl.conf || true
-
 # Set PostgreSQL connection to SSL disable for simpler connections
 ENV PGSSLMODE=disable
 
