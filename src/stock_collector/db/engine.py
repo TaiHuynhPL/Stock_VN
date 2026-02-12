@@ -23,8 +23,16 @@ def init_engine(config: AppConfig):
     # Resolve hostname to IPv4 to avoid IPv6 issues in Docker/GitHub Actions
     db_host = config.db.host
     try:
-        db_host = socket.gethostbyname(config.db.host)
-        logger.info(f"Resolved database host {config.db.host} to {db_host}")
+        # Use getaddrinfo to specifically request IPv4 address
+        addr_info = socket.getaddrinfo(config.db.host, None, family=socket.AF_INET)
+        if addr_info:
+            # Extract the first IPv4 address found
+            # addr_info returns a list of tuples: (family, type, proto, canonname, sockaddr)
+            # sockaddr for AF_INET is (address, port)
+            db_host = addr_info[0][4][0]
+            logger.info(f"Resolved database host {config.db.host} to IPv4: {db_host}")
+        else:
+            logger.warning(f"No IPv4 address found for {config.db.host}")
     except Exception as e:
         logger.warning(f"Failed to resolve database host {config.db.host}: {e}")
 
