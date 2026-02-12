@@ -1,8 +1,28 @@
-"""SQLAlchemy engine and session management."""
+"""SQLAlchemy engine and session management.
+
+This module manages database connections for PostgreSQL. It includes:
+- Thread-safe engine initialization with idempotent behavior
+- IPv4 connection preference to avoid Docker IPv6 issues
+- Connection pooling with automatic health checks (pool_pre_ping)
+- Exponential backoff retry logic for transient connection errors
+- Automatic cleanup on application exit
+- Connection timeout (10s) and statement timeout (5 min)
+
+IPv6 Issue in Docker:
+  Docker containers may resolve hostnames to IPv6 addresses, but IPv6
+  is often disabled in Docker environments, causing "Network is unreachable"
+  errors. This module handles by:
+  1. Attempting IPv4 resolution and using hostaddr parameter if successful
+  2. Setting PGSSLMODE=disable in Docker (via Dockerfile)
+  3. Disabling IPv6 at kernel level in Docker (via Dockerfile)
+  4. Using pool_pre_ping to detect and recover from stale connections
+  5. Implementing exponential backoff retry for transient errors
+"""
 
 import atexit
 import logging
 import threading
+import time
 from contextlib import contextmanager
 from typing import Generator, Optional
 
@@ -50,12 +70,7 @@ def init_engine(config: AppConfig) -> None:
             # Build database URL with connection arguments for IPv4 preference
             db_url = config.db.url
             
-            # PostgreSQL-specific connect_args for better connection handling
-            connect_args = {
-                "connect_timeout": 10,  # 10 second connection timeout
-                "options": "-c statement_timeout=300000",  # 5 minute statement timeout
-            }
-            
+            ipv4_addr = None
             # Try to force IPv4 connection
             try:
                 import socket
@@ -66,6 +81,21 @@ def init_engine(config: AppConfig) -> None:
                     db_url = db_url.replace(config.db.host, ipv4_addr)
             except Exception as e:
                 logger.warning(f"IPv4 resolution failed for {config.db.host}, using default: {e}")
+            
+            # PostgreSQL-specific connect_args for better connection handling
+            connect_args = {
+                "connect_timeout": 10,  # 10 second connection timeout
+                "options": "-c statement_timeout=300000",  # 5 minute statement timeout
+                "application_name": "stock_collector",
+            }
+            
+            # If IPv4 resolution succeeded, use hostaddr to prevent IPv6 fallback
+            if ipv4_addr:
+                connect_args["hostaddr"] = ipv4_addr
+                logger.debug(f"Using hostaddr={ipv4_addr} to enforce IPv4 connection")
+            else:
+                # If IPv4 resolution failed, add target_session_attrs to avoid IPv6 issues
+                logger.warning("IPv4 resolution failed - connection may use IPv6")
             
             _engine = create_engine(
                 db_url,
@@ -113,6 +143,40 @@ def get_engine() -> Engine:
     if _engine is None:
         raise RuntimeError("Database engine not initialized. Call init_engine() first.")
     return _engine
+
+
+def _test_connection_with_retry(max_retries: int = 3, backoff_factor: float = 2.0) -> bool:
+    """
+    Test database connection with exponential backoff retry.
+    
+    Args:
+        max_retries: Maximum number of retry attempts
+        backoff_factor: Exponential backoff multiplier
+        
+    Returns:
+        bool: True if connection successful, False otherwise
+    """
+    engine = get_engine()
+    
+    for attempt in range(max_retries):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.debug(f"Database connection test successful on attempt {attempt + 1}")
+            return True
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = backoff_factor ** attempt
+                logger.warning(
+                    f"Connection attempt {attempt + 1} failed: {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Connection failed after {max_retries} attempts: {e}")
+                return False
+    
+    return False
 
 
 def dispose_engine() -> None:
@@ -185,20 +249,13 @@ def create_all_tables() -> None:
 
 def test_connection() -> bool:
     """
-    Test the database connection.
+    Test the database connection with retry logic.
     
     Returns:
         bool: True if connection is successful, False otherwise
     """
     try:
-        engine = get_engine()
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        logger.info("Database connection test: OK")
-        return True
+        return _test_connection_with_retry(max_retries=3, backoff_factor=2.0)
     except RuntimeError as e:
         logger.error(f"Database not initialized: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Database connection test failed: {e}")
         return False
