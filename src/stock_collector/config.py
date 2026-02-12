@@ -16,13 +16,20 @@ class DBConfig:
     name: str = "postgres"
     user: str = ""
     password: str = ""
+    host_ipv4: str = ""  # Optional IPv4 override for Docker IPv6 issues
 
     @property
     def url(self) -> str:
-        """Build SQLAlchemy database URL."""
+        """Build SQLAlchemy database URL.
+        
+        If host_ipv4 is set, use it instead of host to avoid IPv6 resolution issues.
+        This is useful in Docker environments where IPv6 may be disabled.
+        """
         from urllib.parse import quote_plus
         pwd = quote_plus(self.password)
-        return f"postgresql://{self.user}:{pwd}@{self.host}:{self.port}/{self.name}"
+        # Prefer IPv4 address if provided, fallback to hostname
+        conn_host = self.host_ipv4 or self.host
+        return f"postgresql://{self.user}:{pwd}@{conn_host}:{self.port}/{self.name}"
 
 
 @dataclass
@@ -92,6 +99,7 @@ def load_config() -> AppConfig:
         name=os.getenv("DB_NAME", "postgres"),
         user=os.getenv("DB_USER", ""),
         password=os.getenv("DB_PASSWORD", ""),
+        host_ipv4=os.getenv("DB_HOST_IPV4", ""),  # Pre-resolved IPv4 for Docker environments
     )
 
     # Build collection config

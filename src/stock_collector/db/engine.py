@@ -71,31 +71,57 @@ def init_engine(config: AppConfig) -> None:
             db_url = config.db.url
             
             ipv4_addr = None
-            # Try to force IPv4 connection
-            try:
-                import socket
-                addr_info = socket.getaddrinfo(config.db.host, config.db.port, family=socket.AF_INET)
-                if addr_info:
-                    ipv4_addr = str(addr_info[0][4][0])
-                    logger.info(f"Resolved {config.db.host} to IPv4: {ipv4_addr}")
-                    db_url = db_url.replace(config.db.host, ipv4_addr)
-            except Exception as e:
-                logger.warning(f"IPv4 resolution failed for {config.db.host}, using default: {e}")
+            
+            # Try to resolve hostname to IPv4 to avoid Docker IPv6 issues
+            if not config.db.host_ipv4 and config.db.host not in ("localhost", "127.0.0.1", "::1"):
+                try:
+                    import socket
+                    
+                    # Strategy 1: Try AF_INET first (IPv4 only)
+                    try:
+                        addr_info = socket.getaddrinfo(config.db.host, config.db.port, family=socket.AF_INET)
+                        if addr_info:
+                            ipv4_addr = str(addr_info[0][4][0])
+                            logger.info(f"✓ Resolved {config.db.host} to IPv4: {ipv4_addr}")
+                    except socket.gaierror:
+                        # Strategy 2: Try AF_UNSPEC and filter for IPv4
+                        logger.debug(f"AF_INET failed for {config.db.host}, trying AF_UNSPEC...")
+                        addr_info = socket.getaddrinfo(config.db.host, config.db.port, family=socket.AF_UNSPEC)
+                        ipv4_results = [addr for addr in addr_info if addr[0] == socket.AF_INET]
+                        if ipv4_results:
+                            ipv4_addr = str(ipv4_results[0][4][0])
+                            logger.info(f"✓ Resolved {config.db.host} to IPv4 (via AF_UNSPEC): {ipv4_addr}")
+                        else:
+                            # Only IPv6 available
+                            logger.warning(f"⚠ No IPv4 found for {config.db.host} - only IPv6 available")
+                    
+                    # Replace hostname with resolved IPv4
+                    if ipv4_addr:
+                        db_url = db_url.replace(config.db.host, ipv4_addr)
+                        
+                except Exception as e:
+                    logger.warning(f"⚠ IPv4 resolution failed for {config.db.host}: {e}")
+            elif config.db.host_ipv4:
+                ipv4_addr = config.db.host_ipv4
+                logger.info(f"✓ Using pre-resolved IPv4 from DB_HOST_IPV4: {ipv4_addr}")
+                db_url = db_url.replace(config.db.host, ipv4_addr)
+            else:
+                logger.debug(f"Skipping DNS resolution for {config.db.host} (localhost or IP address)")
             
             # PostgreSQL-specific connect_args for better connection handling
             connect_args = {
                 "connect_timeout": 10,  # 10 second connection timeout
                 "options": "-c statement_timeout=300000",  # 5 minute statement timeout
                 "application_name": "stock_collector",
+                "tcp_user_timeout": 10000,  # 10 second TCP timeout
             }
             
-            # If IPv4 resolution succeeded, use hostaddr to prevent IPv6 fallback
+            # Use hostaddr when IPv4 is available to prevent psycopg2 re-resolving to IPv6
             if ipv4_addr:
                 connect_args["hostaddr"] = ipv4_addr
                 logger.debug(f"Using hostaddr={ipv4_addr} to enforce IPv4 connection")
             else:
-                # If IPv4 resolution failed, add target_session_attrs to avoid IPv6 issues
-                logger.warning("IPv4 resolution failed - connection may use IPv6")
+                logger.debug("No IPv4 override available - will use hostname for connection")
             
             _engine = create_engine(
                 db_url,
@@ -195,11 +221,17 @@ def dispose_engine() -> None:
 @contextmanager
 def get_session() -> Generator[Session, None, None]:
     """
-    Get a database session as a context manager.
+    Get a database session as a context manager with automatic IPv6 error recovery.
+    
+    This context manager implements automatic retry logic when IPv6 connection
+    errors are detected. If a connection fails due to IPv6 being unreachable:
+    1. Detects IPv6-related errors (pattern matching)
+    2. Disposes connection pool to force fresh connection
+    3. Retries with exponential backoff (1s, 2s, 4s)
+    4. Gradually increases timeouts to help recovery
     
     Usage:
         with get_session() as session:
-            # Use session
             result = session.query(...).all()
     
     Yields:
@@ -207,20 +239,70 @@ def get_session() -> Generator[Session, None, None]:
         
     Raises:
         RuntimeError: If engine is not initialized
+        sqlalchemy.exc.OperationalError: If all retries exhausted
     """
     if _SessionLocal is None:
         raise RuntimeError("Database engine not initialized. Call init_engine() first.")
     
-    session = _SessionLocal()
-    try:
-        yield session
-        session.commit()
-    except Exception as e:
-        session.rollback()
-        logger.error(f"Session error, rolling back: {e}", exc_info=True)
-        raise
-    finally:
-        session.close()
+    max_retries = 4
+    retry_count = 0
+    ipv6_error_detected = False
+    
+    while retry_count <= max_retries:
+        session = _SessionLocal()
+        try:
+            yield session
+            session.commit()
+            if retry_count > 0:
+                logger.info(f"✓ Connection recovered after {retry_count} retries")
+            return
+            
+        except Exception as e:
+            session.rollback()
+            
+            # Detect IPv6-related connection errors
+            error_str = str(e).lower()
+            error_full = str(e)
+            
+            is_ipv6_error = (
+                "2406:" in error_full  # IPv6 address pattern
+                or "network is unreachable" in error_str
+                or "no route to host" in error_str
+                or "connection refused" in error_str and retry_count < max_retries
+                or "timeout" in error_str and retry_count < max_retries
+            )
+            
+            if is_ipv6_error and retry_count < max_retries:
+                ipv6_error_detected = True
+                retry_count += 1
+                wait_time = 2 ** (retry_count - 1)  # 1s, 2s, 4s, 8s
+                
+                logger.warning(
+                    f"🔄 Connection error detected (attempt {retry_count}/{max_retries}): "
+                    f"{error_str[:80]}... Retrying in {wait_time}s..."
+                )
+                
+                # Dispose pool to force new connection with fresh DNS resolution
+                engine = get_engine()
+                engine.dispose()
+                logger.debug(f"  → Disposed connection pool")
+                
+                time.sleep(wait_time)
+                continue
+            else:
+                # Not a retriable error or max retries exceeded
+                if ipv6_error_detected:
+                    logger.error(
+                        f"✗ Connection failed after {retry_count} retries. "
+                        f"Last error: {error_str[:100]}",
+                        exc_info=True
+                    )
+                else:
+                    logger.error(f"✗ Session error (non-retriable): {error_str[:100]}", exc_info=True)
+                raise
+                
+        finally:
+            session.close()
 
 
 
