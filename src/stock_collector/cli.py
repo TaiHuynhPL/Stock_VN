@@ -29,7 +29,6 @@ def _setup_logging(config):
     )
     # Suppress noisy loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
 def _init_app():
@@ -176,26 +175,6 @@ def collect_daily(collect_type):
         console.print(f"[green]  ✅ {count} financial records[/]\n")
 
     console.print("[bold green]🎉 Daily collection completed![/]")
-
-
-@cli.command()
-def schedule():
-    """Bật scheduler tự động thu thập hằng ngày.
-
-    Scheduler sẽ chạy liên tục và tự động thu thập:
-    - 17:30: Cập nhật danh sách mã CK
-    - 18:00: Thu thập giá mới nhất (incremental)
-    - 18:15: Thu thập chỉ số thị trường
-    - Thứ 7 08:00: Thu thập báo cáo tài chính
-    """
-    config = _init_app()
-
-    console.print("\n[bold blue]⏰ Starting Stock Collector Scheduler...[/]")
-    console.print("[dim]Press Ctrl+C to stop[/]\n")
-
-    from stock_collector.scheduler import StockScheduler
-    scheduler = StockScheduler(config)
-    scheduler.start()
 
 
 @cli.command()

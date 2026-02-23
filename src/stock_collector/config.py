@@ -43,16 +43,6 @@ class CollectionConfig:
 
 
 @dataclass
-class SchedulerConfig:
-    daily_price_cron: dict = field(default_factory=lambda: {"hour": 18, "minute": 0})
-    daily_index_cron: dict = field(default_factory=lambda: {"hour": 18, "minute": 15})
-    weekly_financial_cron: dict = field(
-        default_factory=lambda: {"day_of_week": "sat", "hour": 8, "minute": 0}
-    )
-    daily_listing_cron: dict = field(default_factory=lambda: {"hour": 17, "minute": 30})
-
-
-@dataclass
 class LoggingConfig:
     level: str = "INFO"
     format: str = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
@@ -63,7 +53,6 @@ class LoggingConfig:
 class AppConfig:
     db: DBConfig = field(default_factory=DBConfig)
     collection: CollectionConfig = field(default_factory=CollectionConfig)
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     indices: list[str] = field(default_factory=lambda: ["VNINDEX", "HNX-INDEX", "UPCOM-INDEX"])
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -118,17 +107,6 @@ def load_config() -> AppConfig:
     if api_key:
         os.environ["VNSTOCK_API_KEY"] = api_key
 
-    # Build scheduler config
-    sched_data = yaml_config.get("scheduler", {})
-    scheduler_config = SchedulerConfig(
-        daily_price_cron=sched_data.get("daily_price_cron", {"hour": 18, "minute": 0}),
-        daily_index_cron=sched_data.get("daily_index_cron", {"hour": 18, "minute": 15}),
-        weekly_financial_cron=sched_data.get(
-            "weekly_financial_cron", {"day_of_week": "sat", "hour": 8, "minute": 0}
-        ),
-        daily_listing_cron=sched_data.get("daily_listing_cron", {"hour": 17, "minute": 30}),
-    )
-
     # Build logging config
     log_data = yaml_config.get("logging", {})
     logging_config = LoggingConfig(
@@ -140,7 +118,6 @@ def load_config() -> AppConfig:
     return AppConfig(
         db=db_config,
         collection=collection_config,
-        scheduler=scheduler_config,
         indices=yaml_config.get("indices", ["VNINDEX", "HNX-INDEX", "UPCOM-INDEX"]),
         logging=logging_config,
     )
