@@ -68,6 +68,40 @@ stock-collector collect-daily --type price
 stock-collector status
 ```
 
+## Lên lịch tự động (Cronjob)
+
+### GitHub Actions (khuyến nghị)
+
+Workflow tự động chạy `collect-daily` lúc **17:30 ICT (thứ 2 → thứ 6)** — sau khi thị trường đóng cửa.
+
+**Thiết lập:**
+
+1. Push code lên GitHub repository
+2. Vào **Settings → Secrets and variables → Actions** và thêm các secrets:
+
+| Secret | Giá trị |
+|---|---|
+| `DB_HOST` | Hostname PostgreSQL |
+| `DB_PORT` | Port (mặc định: 5432) |
+| `DB_NAME` | Tên database |
+| `DB_USER` | Username |
+| `DB_PASSWORD` | Password |
+| `VNSTOCK_API_KEY` | API key vnstock |
+
+3. Workflow sẽ tự động chạy theo lịch. Có thể chạy thủ công tại tab **Actions → "📈 Daily Stock Data Collection" → Run workflow**
+
+### Crontab Local (tuỳ chọn)
+
+Nếu muốn chạy trên máy local thay vì GitHub Actions:
+
+```bash
+# Mở crontab editor
+crontab -e
+
+# Thêm dòng sau (chạy 17:30 thứ 2-6):
+30 17 * * 1-5 /absolute/path/to/Stock_VN/scripts/run_collect_daily.sh >> /absolute/path/to/Stock_VN/logs/cron.log 2>&1
+```
+
 ## Cấu trúc Database
 
 | Bảng | Mô tả |
@@ -83,7 +117,11 @@ stock-collector status
 
 ```
 Stock_VN/
-├── Dockerfile                          # Docker build
+├── .github/workflows/
+│   └── collect-daily.yml   # Cronjob GitHub Actions
+├── scripts/
+│   └── run_collect_daily.sh # Script chạy local
+├── Dockerfile
 ├── pyproject.toml
 ├── .env
 ├── config.yaml
