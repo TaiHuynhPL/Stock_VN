@@ -77,18 +77,22 @@ Workflow tự động chạy `collect-daily` lúc **17:30 ICT (thứ 2 → thứ
 **Thiết lập:**
 
 1. Push code lên GitHub repository
-2. Vào **Settings → Secrets and variables → Actions** và thêm các secrets:
+2. Vào **Supabase Dashboard → Settings → Database → Connection string → chọn tab "Session mode"** để lấy thông tin pooler
+3. Vào GitHub repo **Settings → Secrets and variables → Actions** và thêm các secrets:
 
-| Secret | Giá trị |
-|---|---|
-| `DB_HOST` | Hostname PostgreSQL |
-| `DB_PORT` | Port (mặc định: 5432) |
-| `DB_NAME` | Tên database |
-| `DB_USER` | Username |
-| `DB_PASSWORD` | Password |
-| `VNSTOCK_API_KEY` | API key vnstock |
+> [!IMPORTANT]
+> **Phải dùng thông tin Connection Pooler (Session mode)** chứ không phải Direct connection, vì GitHub Actions không hỗ trợ IPv6.
 
-3. Workflow sẽ tự động chạy theo lịch. Có thể chạy thủ công tại tab **Actions → "📈 Daily Stock Data Collection" → Run workflow**
+| Secret | Giá trị | Ví dụ |
+|---|---|---|
+| `DB_HOST` | Pooler host | `aws-0-ap-southeast-1.pooler.supabase.com` |
+| `DB_PORT` | Pooler port | `6543` |
+| `DB_NAME` | Tên database | `postgres` |
+| `DB_USER` | Pooler user | `postgres.keuknfuytjwzrvojgtub` |
+| `DB_PASSWORD` | Password | *(giữ nguyên)* |
+| `VNSTOCK_API_KEY` | API key vnstock | `vnstock_xxx...` |
+
+4. Workflow sẽ tự động chạy theo lịch. Có thể chạy thủ công tại tab **Actions → "📈 Daily Stock Data Collection" → Run workflow**
 
 ### Crontab Local (tuỳ chọn)
 

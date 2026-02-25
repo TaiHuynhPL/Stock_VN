@@ -32,30 +32,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      - name: 🌐 Resolve DB host to IPv4
-        id: resolve-dns
-        run: |
-          # GitHub Actions runners don't support IPv6 outbound
-          # Supabase hostnames may resolve to IPv6-only, so we force IPv4 via Google DNS
-          DB_HOST="${{ secrets.DB_HOST }}"
-          echo "Resolving $DB_HOST to IPv4..."
-          
-          # Try to get IPv4 address using dig with Google DNS
-          IPV4=$(dig +short A "$DB_HOST" @8.8.8.8 | head -n1)
-          
-          if [ -z "$IPV4" ]; then
-            # Fallback: try system resolver
-            IPV4=$(getent ahostsv4 "$DB_HOST" 2>/dev/null | head -n1 | awk '{print $1}')
-          fi
-          
-          if [ -n "$IPV4" ]; then
-            echo "✅ Resolved to IPv4: $IPV4"
-            echo "DB_HOST_IPV4=$IPV4" >> "$GITHUB_ENV"
-          else
-            echo "⚠️ Could not resolve IPv4 for $DB_HOST — will try direct connection"
-            echo "DB_HOST_IPV4=" >> "$GITHUB_ENV"
-          fi
-
+      # Sử dụng Supabase Connection Pooler (Supavisor) thay vì direct connection
+      # vì GitHub Actions runners KHÔNG hỗ trợ IPv6, mà direct host chỉ có IPv6.
+      # Lấy thông tin pooler tại: Supabase Dashboard → Settings → Database → Connection string → Session mode
       - name: 🔧 Create .env from secrets
         run: |
           cat > .env << EOF
@@ -65,8 +44,10 @@ jobs:
           DB_USER=${{ secrets.DB_USER }}
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           VNSTOCK_API_KEY=${{ secrets.VNSTOCK_API_KEY }}
-          DB_HOST_IPV4=${{ env.DB_HOST_IPV4 }}
           EOF
+
+      - name: 🔌 Test database connection
+        run: stock-collector status -n 1 || echo "⚠️ DB connection issue — will retry in collect steps"
 
       - name: 📋 Update stock listing
         run: stock-collector collect-daily --type listing
@@ -83,3 +64,4 @@ jobs:
       - name: 📊 Show collection status
         if: always()
         run: stock-collector status -n 10
+
