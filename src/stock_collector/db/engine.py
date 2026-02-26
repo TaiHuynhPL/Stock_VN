@@ -2,29 +2,30 @@
 
 This module manages database connections for PostgreSQL. It includes:
 - Thread-safe engine initialization with idempotent behavior
-- IPv4 connection preference to avoid Docker IPv6 issues
+- Auto-detection of Supabase direct hosts and fallback to Connection Pooler
+- IPv4 connection preference to avoid IPv6-only environments (GitHub Actions, Docker)
 - Connection pooling with automatic health checks (pool_pre_ping)
 - Exponential backoff retry logic for transient connection errors
 - Automatic cleanup on application exit
 - Connection timeout (10s) and statement timeout (5 min)
 
-IPv6 Issue in Docker:
-  Docker containers may resolve hostnames to IPv6 addresses, but IPv6
-  is often disabled in Docker environments, causing "Network is unreachable"
-  errors. This module handles by:
-  1. Attempting IPv4 resolution and using hostaddr parameter if successful
-  2. Setting PGSSLMODE=disable in Docker (via Dockerfile)
-  3. Disabling IPv6 at kernel level in Docker (via Dockerfile)
-  4. Using pool_pre_ping to detect and recover from stale connections
-  5. Implementing exponential backoff retry for transient errors
+Supabase IPv6 Issue:
+  Supabase direct connection hosts (db.<ref>.supabase.co) only have AAAA records
+  (IPv6). Environments like GitHub Actions runners and some Docker setups don't
+  support IPv6 outbound. This module automatically detects this and switches to
+  the Supabase Connection Pooler (Supavisor) which has IPv4 A records.
 """
 
 import atexit
 import logging
+import os
+import re
+import socket
 import threading
 import time
 from contextlib import contextmanager
 from typing import Generator, Optional
+from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
@@ -39,115 +40,182 @@ _SessionLocal: Optional[sessionmaker] = None
 _lock = threading.Lock()
 
 
+def _resolve_ipv4(hostname: str, port: int) -> Optional[str]:
+    """Try to resolve hostname to an IPv4 address. Returns None if not found."""
+    try:
+        # Strategy 1: AF_INET only
+        addr_info = socket.getaddrinfo(hostname, port, family=socket.AF_INET)
+        if addr_info:
+            return str(addr_info[0][4][0])
+    except socket.gaierror:
+        pass
+
+    try:
+        # Strategy 2: AF_UNSPEC, filter for IPv4
+        addr_info = socket.getaddrinfo(hostname, port, family=socket.AF_UNSPEC)
+        ipv4_results = [a for a in addr_info if a[0] == socket.AF_INET]
+        if ipv4_results:
+            return str(ipv4_results[0][4][0])
+    except socket.gaierror:
+        pass
+
+    return None
+
+
+def _detect_supabase_region(project_ref: str) -> str:
+    """Detect Supabase project region via health endpoint."""
+    try:
+        import urllib.request
+
+        url = f"https://{project_ref}.supabase.co/auth/v1/health"
+        req = urllib.request.Request(url, method="GET")
+        req.add_header("User-Agent", "stock-collector/1.0")
+
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            for header_name in ("sb-region", "x-region", "fly-region"):
+                val = resp.headers.get(header_name, "")
+                if val:
+                    logger.info(f"  Detected Supabase region: {val}")
+                    return val.strip()
+    except Exception as e:
+        logger.debug(f"  Could not auto-detect Supabase region: {e}")
+
+    # Default for Vietnamese users (Singapore — closest region)
+    return "ap-southeast-1"
+
+
+def _get_supabase_pooler(host: str, user: str) -> Optional[tuple[str, int, str]]:
+    """
+    If host is a Supabase direct connection (db.<ref>.supabase.co),
+    return (pooler_host, pooler_port, pooler_user) for session mode.
+    Returns None if not a Supabase direct host.
+    """
+    match = re.match(r"^db\.([a-z0-9]+)\.supabase\.co$", host)
+    if not match:
+        return None
+
+    project_ref = match.group(1)
+
+    # Allow region override via env var
+    region = os.environ.get("SUPABASE_REGION", "").strip()
+    if not region:
+        region = _detect_supabase_region(project_ref)
+
+    pooler_host = f"aws-0-{region}.pooler.supabase.com"
+    pooler_port = 6543   # Session mode (compatible with ORMs)
+    pooler_user = f"postgres.{project_ref}"
+
+    return (pooler_host, pooler_port, pooler_user)
+
+
 def init_engine(config: AppConfig) -> None:
     """
     Initialize the SQLAlchemy engine and session factory.
-    
+
     This function is thread-safe and idempotent. It configures:
     - Connection pooling with IPv4 preference
+    - Auto Supabase pooler fallback when IPv4 is unavailable
     - Connection timeout (10 seconds)
     - Pool recycle for long-lived connections
     - Pre-ping to detect stale connections
-    
-    Args:
-        config: Application configuration containing database settings
-        
-    Raises:
-        ValueError: If database configuration is invalid
     """
     global _engine, _SessionLocal
-    
+
     if _engine is not None:
         logger.debug("Database engine already initialized, skipping re-initialization")
         return
-    
+
     with _lock:
         # Double-check after acquiring lock
         if _engine is not None:
             return
-        
+
         try:
-            # Build database URL with connection arguments for IPv4 preference
             db_url = config.db.url
-            
             ipv4_addr = None
-            
-            # Try to resolve hostname to IPv4 to avoid Docker IPv6 issues
-            if not config.db.host_ipv4 and config.db.host not in ("localhost", "127.0.0.1", "::1"):
-                try:
-                    import socket
-                    
-                    # Strategy 1: Try AF_INET first (IPv4 only)
-                    try:
-                        addr_info = socket.getaddrinfo(config.db.host, config.db.port, family=socket.AF_INET)
-                        if addr_info:
-                            ipv4_addr = str(addr_info[0][4][0])
-                            logger.info(f"✓ Resolved {config.db.host} to IPv4: {ipv4_addr}")
-                    except socket.gaierror:
-                        # Strategy 2: Try AF_UNSPEC and filter for IPv4
-                        logger.debug(f"AF_INET failed for {config.db.host}, trying AF_UNSPEC...")
-                        addr_info = socket.getaddrinfo(config.db.host, config.db.port, family=socket.AF_UNSPEC)
-                        ipv4_results = [addr for addr in addr_info if addr[0] == socket.AF_INET]
-                        if ipv4_results:
-                            ipv4_addr = str(ipv4_results[0][4][0])
-                            logger.info(f"✓ Resolved {config.db.host} to IPv4 (via AF_UNSPEC): {ipv4_addr}")
+            effective_host = config.db.host
+            effective_port = config.db.port
+
+            # --- Step 1: Try to resolve IPv4 for the configured host ---
+            if config.db.host not in ("localhost", "127.0.0.1", "::1"):
+                ipv4_addr = _resolve_ipv4(config.db.host, config.db.port)
+
+                if ipv4_addr:
+                    logger.info(f"✓ Resolved {config.db.host} to IPv4: {ipv4_addr}")
+                    db_url = db_url.replace(config.db.host, ipv4_addr)
+                else:
+                    # --- Step 2: No IPv4 → try Supabase pooler auto-switch ---
+                    logger.warning(f"⚠ No IPv4 for {config.db.host} — checking Supabase pooler...")
+
+                    pooler_info = _get_supabase_pooler(config.db.host, config.db.user)
+                    if pooler_info:
+                        pooler_host, pooler_port, pooler_user = pooler_info
+
+                        # Verify pooler has IPv4
+                        pooler_ipv4 = _resolve_ipv4(pooler_host, pooler_port)
+                        if pooler_ipv4:
+                            # Build new URL with pooler details
+                            pwd = quote_plus(config.db.password)
+                            db_url = (
+                                f"postgresql://{pooler_user}:{pwd}"
+                                f"@{pooler_host}:{pooler_port}/{config.db.name}"
+                            )
+                            ipv4_addr = pooler_ipv4
+                            effective_host = pooler_host
+                            effective_port = pooler_port
+                            logger.info(
+                                f"🔄 Auto-switched to Supabase pooler: "
+                                f"{pooler_host}:{pooler_port} (IPv4: {pooler_ipv4})"
+                            )
                         else:
-                            # Only IPv6 available
-                            logger.warning(f"⚠ No IPv4 found for {config.db.host} - only IPv6 available")
-                    
-                    # Replace hostname with resolved IPv4
-                    if ipv4_addr:
-                        db_url = db_url.replace(config.db.host, ipv4_addr)
-                        
-                except Exception as e:
-                    logger.warning(f"⚠ IPv4 resolution failed for {config.db.host}: {e}")
-            elif config.db.host_ipv4:
-                ipv4_addr = config.db.host_ipv4
-                logger.info(f"✓ Using pre-resolved IPv4 from DB_HOST_IPV4: {ipv4_addr}")
-                db_url = db_url.replace(config.db.host, ipv4_addr)
+                            logger.warning(
+                                f"⚠ Supabase pooler {pooler_host} also has no IPv4"
+                            )
+                    else:
+                        logger.warning(
+                            f"⚠ No IPv4 and not a Supabase host — "
+                            f"connection may fail in IPv4-only environments"
+                        )
             else:
-                logger.debug(f"Skipping DNS resolution for {config.db.host} (localhost or IP address)")
-            
-            # PostgreSQL-specific connect_args for better connection handling
+                logger.debug(f"Skipping DNS resolution for {config.db.host}")
+
+            # --- Step 3: Build connect_args ---
             connect_args = {
-                "connect_timeout": 10,  # 10 second connection timeout
-                "options": "-c statement_timeout=300000",  # 5 minute statement timeout
+                "connect_timeout": 10,
+                "options": "-c statement_timeout=300000",  # 5 min
                 "application_name": "stock_collector",
-                "tcp_user_timeout": 10000,  # 10 second TCP timeout
+                "tcp_user_timeout": 10000,
             }
-            
-            # Use hostaddr when IPv4 is available to prevent psycopg2 re-resolving to IPv6
+
             if ipv4_addr:
                 connect_args["hostaddr"] = ipv4_addr
-                logger.debug(f"Using hostaddr={ipv4_addr} to enforce IPv4 connection")
-            else:
-                logger.debug("No IPv4 override available - will use hostname for connection")
-            
+                logger.debug(f"Using hostaddr={ipv4_addr} to enforce IPv4")
+
+            # --- Step 4: Create engine ---
             _engine = create_engine(
                 db_url,
                 pool_size=5,
                 max_overflow=10,
-                pool_recycle=3600,  # Recycle connections after 1 hour
-                pool_pre_ping=True,  # Test connections before using them
+                pool_recycle=3600,
+                pool_pre_ping=True,
                 connect_args=connect_args,
                 echo=False,
                 future=True,
             )
-            
-            # Register event listener for connection pool
+
             @event.listens_for(_engine, "engine_disposed")
             def receive_engine_disposed(engine):
                 logger.debug("Engine connection pool disposed")
-            
+
             _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
-            
-            # Register cleanup on exit
+
             atexit.register(dispose_engine)
-            
+
             logger.info(
-                f"Database engine initialized: {config.db.host}:{config.db.port}/{config.db.name}"
+                f"Database engine initialized: "
+                f"{effective_host}:{effective_port}/{config.db.name}"
             )
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize database engine: {e}", exc_info=True)
             _engine = None
