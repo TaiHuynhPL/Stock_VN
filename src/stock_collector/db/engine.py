@@ -136,50 +136,40 @@ def init_engine(config: AppConfig) -> None:
             effective_host = config.db.host
             effective_port = config.db.port
 
-            # --- Step 1: Try to resolve IPv4 for the configured host ---
-            if config.db.host not in ("localhost", "127.0.0.1", "::1"):
-                ipv4_addr = _resolve_ipv4(config.db.host, config.db.port)
+            # --- Priority 1: Use DB_POOLER_URL if set (Supabase pooler) ---
+            if config.db.pooler_url:
+                db_url = config.db.pooler_url
+                logger.info("🔄 Using DB_POOLER_URL (Supabase pooler connection)")
 
+                # Try to extract host from pooler URL for IPv4 resolution
+                try:
+                    from urllib.parse import urlparse
+                    parsed = urlparse(db_url)
+                    if parsed.hostname:
+                        effective_host = parsed.hostname
+                        effective_port = parsed.port or 6543
+                        ipv4_addr = _resolve_ipv4(effective_host, effective_port)
+                        if ipv4_addr:
+                            logger.info(f"  ✓ Pooler resolved to IPv4: {ipv4_addr}")
+                except Exception:
+                    pass
+
+            # --- Priority 2: Standard host with IPv4 resolution ---
+            elif config.db.host not in ("localhost", "127.0.0.1", "::1"):
+                ipv4_addr = _resolve_ipv4(config.db.host, config.db.port)
                 if ipv4_addr:
                     logger.info(f"✓ Resolved {config.db.host} to IPv4: {ipv4_addr}")
                     db_url = db_url.replace(config.db.host, ipv4_addr)
                 else:
-                    # --- Step 2: No IPv4 → try Supabase pooler auto-switch ---
-                    logger.warning(f"⚠ No IPv4 for {config.db.host} — checking Supabase pooler...")
-
-                    pooler_info = _get_supabase_pooler(config.db.host, config.db.user)
-                    if pooler_info:
-                        pooler_host, pooler_port, pooler_user = pooler_info
-
-                        # Verify pooler has IPv4
-                        pooler_ipv4 = _resolve_ipv4(pooler_host, pooler_port)
-                        if pooler_ipv4:
-                            # Build new URL with pooler details
-                            pwd = quote_plus(config.db.password)
-                            db_url = (
-                                f"postgresql://{pooler_user}:{pwd}"
-                                f"@{pooler_host}:{pooler_port}/{config.db.name}"
-                            )
-                            ipv4_addr = pooler_ipv4
-                            effective_host = pooler_host
-                            effective_port = pooler_port
-                            logger.info(
-                                f"🔄 Auto-switched to Supabase pooler: "
-                                f"{pooler_host}:{pooler_port} (IPv4: {pooler_ipv4})"
-                            )
-                        else:
-                            logger.warning(
-                                f"⚠ Supabase pooler {pooler_host} also has no IPv4"
-                            )
-                    else:
-                        logger.warning(
-                            f"⚠ No IPv4 and not a Supabase host — "
-                            f"connection may fail in IPv4-only environments"
-                        )
+                    logger.warning(
+                        f"⚠ No IPv4 for {config.db.host} — connection may fail.\n"
+                        f"  Set DB_POOLER_URL env var with your Supabase pooler "
+                        f"connection string (Dashboard → Settings → Database → Session mode)"
+                    )
             else:
                 logger.debug(f"Skipping DNS resolution for {config.db.host}")
 
-            # --- Step 3: Build connect_args ---
+            # --- Build connect_args ---
             connect_args = {
                 "connect_timeout": 10,
                 "options": "-c statement_timeout=300000",  # 5 min
@@ -191,7 +181,7 @@ def init_engine(config: AppConfig) -> None:
                 connect_args["hostaddr"] = ipv4_addr
                 logger.debug(f"Using hostaddr={ipv4_addr} to enforce IPv4")
 
-            # --- Step 4: Create engine ---
+            # --- Create engine ---
             _engine = create_engine(
                 db_url,
                 pool_size=5,

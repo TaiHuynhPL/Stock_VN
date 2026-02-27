@@ -32,9 +32,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      # Sử dụng Supabase Connection Pooler (Supavisor) thay vì direct connection
-      # vì GitHub Actions runners KHÔNG hỗ trợ IPv6, mà direct host chỉ có IPv6.
-      # Lấy thông tin pooler tại: Supabase Dashboard → Settings → Database → Connection string → Session mode
+      # GitHub Actions runners KHÔNG hỗ trợ IPv6, mà Supabase direct host chỉ có IPv6.
+      # DB_POOLER_URL là connection string pooler lấy từ:
+      # Supabase Dashboard → Settings → Database → Connection string → Session mode
       - name: 🔧 Create .env from secrets
         run: |
           cat > .env << EOF
@@ -44,6 +44,7 @@ jobs:
           DB_USER=${{ secrets.DB_USER }}
           DB_PASSWORD=${{ secrets.DB_PASSWORD }}
           VNSTOCK_API_KEY=${{ secrets.VNSTOCK_API_KEY }}
+          DB_POOLER_URL=${{ secrets.DB_POOLER_URL }}
           EOF
 
       - name: 🔌 Test database connection
