@@ -68,44 +68,6 @@ stock-collector collect-daily --type price
 stock-collector status
 ```
 
-## Lên lịch tự động (Cronjob)
-
-### GitHub Actions (khuyến nghị)
-
-Workflow tự động chạy `collect-daily` lúc **17:30 ICT (thứ 2 → thứ 6)** — sau khi thị trường đóng cửa.
-
-**Thiết lập:**
-
-1. Vào **Supabase Dashboard → Settings → Database → Connection string → chọn tab "Session mode"** và copy connection string
-2. Vào GitHub repo **Settings → Secrets and variables → Actions** và thêm các secrets:
-
-> [!IMPORTANT]
-> `DB_POOLER_URL` là secret quan trọng nhất — copy nguyên connection string từ Supabase (Session mode). Nếu có secret này, app sẽ tự động dùng pooler thay vì direct connection.
-
-| Secret | Giá trị | Ví dụ |
-|---|---|---|
-| `DB_POOLER_URL` | **Connection string (Session mode)** | `postgresql://postgres.xxx:password@aws-0-region.pooler.supabase.com:6543/postgres` |
-| `DB_HOST` | Direct host (backup) | `db.xxx.supabase.co` |
-| `DB_PORT` | Port | `5432` |
-| `DB_NAME` | Database name | `postgres` |
-| `DB_USER` | Username | `postgres` |
-| `DB_PASSWORD` | Password | *(password)* |
-| `VNSTOCK_API_KEY` | API key vnstock | `vnstock_xxx...` |
-
-3. Push code, workflow sẽ tự chạy. Chạy thủ công: **Actions → "📈 Daily Stock Data Collection" → Run workflow**
-
-### Crontab Local (tuỳ chọn)
-
-Nếu muốn chạy trên máy local thay vì GitHub Actions:
-
-```bash
-# Mở crontab editor
-crontab -e
-
-# Thêm dòng sau (chạy 17:30 thứ 2-6):
-30 17 * * 1-5 /absolute/path/to/Stock_VN/scripts/run_collect_daily.sh >> /absolute/path/to/Stock_VN/logs/cron.log 2>&1
-```
-
 ## Cấu trúc Database
 
 | Bảng | Mô tả |
@@ -121,10 +83,6 @@ crontab -e
 
 ```
 Stock_VN/
-├── .github/workflows/
-│   └── collect-daily.yml   # Cronjob GitHub Actions
-├── scripts/
-│   └── run_collect_daily.sh # Script chạy local
 ├── Dockerfile
 ├── pyproject.toml
 ├── .env
